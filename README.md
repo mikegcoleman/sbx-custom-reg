@@ -213,3 +213,7 @@ Confirm which of those your environment can allow.
 | The approval prompt appears for every developer | Expected on first run. Pre-approve by deploying `credentials.yaml`, as described under [Managing settings and approvals centrally](#managing-settings-and-approvals-centrally). |
 | `sbx run` is rejected because the kit "combines 2 context files" | A kit set can carry only one block of agent guidance. Don't add `agent-context` capabilities to the tools kit. |
 | Build fails downloading `kubectl` or Helm | The build container needs `dl.k8s.io` and `get.helm.sh`. Allow them, or mirror the binaries and change the URLs in `kits/k8s-tools/k8s-tools.dockerfile.tmpl`. |
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
