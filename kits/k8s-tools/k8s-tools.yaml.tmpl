@@ -1,0 +1,27 @@
+# syntax=@KIT_NS@/sandbox-kit:3
+schemaVersion: "3"
+displayName: Kubernetes tools
+description: kubectl and Helm, pinned and checksum-verified at build time.
+licenses: [Apache-2.0]
+
+kind: mixin
+version: "@K8S_TOOLS_KIT_VERSION@"
+
+# Each arg drives the download, the checksum and the provide, so a version bump is
+# one edit. kubectl supports one minor version of skew against the cluster's API
+# server; set KUBECTL_VERSION to match yours.
+args:
+  kubectlVersion:
+    default: "@KUBECTL_VERSION@"
+    pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    description: kubectl release to install
+    buildArg: KUBECTL_VERSION
+  helmVersion:
+    default: "@HELM_VERSION@"
+    pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    description: Helm release to install
+    buildArg: HELM_VERSION
+
+provides:
+  - "kubectl@${{ kit.args.kubectlVersion }}"
+  - "helm@${{ kit.args.helmVersion }}"

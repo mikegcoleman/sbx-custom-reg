@@ -1,0 +1,25 @@
+# The build stage runs on the build host's own architecture and only downloads and
+# verifies binaries, so a multi-platform build needs no emulation.
+FROM --platform=$BUILDPLATFORM @KIT_NS@/debian:bookworm-slim AS build
+ARG TARGETARCH
+ARG KUBECTL_VERSION
+ARG HELM_VERSION
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /tmp
+RUN set -eux; \
+    case "$TARGETARCH" in amd64|arm64) ;; *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; esac; \
+    mkdir -p /out/usr/local/bin; \
+    k8s="https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl"; \
+    curl -fsSLo kubectl "$k8s"; \
+    echo "$(curl -fsSL "$k8s.sha256")  kubectl" | sha256sum -c -; \
+    install -m 0755 -o 0 -g 0 kubectl /out/usr/local/bin/kubectl; \
+    helm="helm-v${HELM_VERSION}-linux-${TARGETARCH}.tar.gz"; \
+    curl -fsSLO "https://get.helm.sh/$helm"; \
+    curl -fsSL "https://get.helm.sh/$helm.sha256sum" | sha256sum -c -; \
+    tar -xzf "$helm"; \
+    install -m 0755 -o 0 -g 0 "linux-${TARGETARCH}/helm" /out/usr/local/bin/helm
+
+FROM scratch
+COPY --from=build /out /

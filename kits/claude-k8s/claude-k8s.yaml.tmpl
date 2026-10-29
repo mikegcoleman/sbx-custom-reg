@@ -1,0 +1,18 @@
+# syntax=@KIT_NS@/sandbox-kit:3
+schemaVersion: "3"
+displayName: Claude Code with Kubernetes tools
+description: Claude Code with kubectl and Helm, published as one kit from your registry.
+
+kind: set
+version: "@CLAUDE_K8S_KIT_VERSION@"
+
+args:
+  registry:
+    default: @KIT_NS@
+    pattern: '^[a-z0-9][a-z0-9._/:-]*$'
+    description: Registry namespace the component kits were pushed to
+    buildArg: KIT_REGISTRY
+
+kits:
+  - ref: ${{ kit.args.registry }}/sbx-kit-claude:@CLAUDE_KIT_VERSION@
+  - ref: ${{ kit.args.registry }}/sbx-kit-k8s-tools:@K8S_TOOLS_KIT_VERSION@
