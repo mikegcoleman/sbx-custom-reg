@@ -6,8 +6,8 @@ baked in, and without any developer machine pulling from Docker Hub.
 This repository builds one kit, **Claude Code with `kubectl` and Helm**, publishes it to
 your registry, and configures `sbx` to use it. After setup, a developer runs a single command:
 
-```console
-$ sbx run --name demo registry.example.com/sbx/sbx-kit-claude-k8s:1.0.0 .
+```bash
+sbx run --name demo registry.example.com/sbx/sbx-kit-claude-k8s:1.0.0 .
 ```
 
 It uses [kits v3](https://docs.docker.com/ai/sandboxes/customize/), which needs **sbx 0.45 or later**.
@@ -57,8 +57,30 @@ so credentials stay out of the repository.
 
 To use a `.env` file, copy the example and fill it in:
 
-```console
-$ cp .env.example .env
+```bash
+cp .env.example .env
+```
+
+### Scripts or commands
+
+Steps 2, 3 and 4 each show two ways to do the same work. You can run a script, or run the commands
+the script runs, one at a time. The scripts check more: they confirm every required variable is
+set and well formed, stop at the first error, and (in Step 3) set up the build container's trust
+for a private CA. The commands let you see exactly what happens. Both do the same thing.
+
+The scripts read `.env` for you. If you run the commands yourself, your shell needs the variables
+first. Run this from the root of this repository. It loads `.env`, which therefore has to be valid
+shell syntax (quote any value that contains spaces or special characters), and fills in the defaults
+for the optional variables:
+
+```bash
+set -a; source .env; set +a
+export KIT_NS="$REGISTRY/$REGISTRY_NAMESPACE"
+export CLAUDE_KIT_VERSION="${CLAUDE_KIT_VERSION:-2.1.267}"
+export KUBECTL_VERSION="${KUBECTL_VERSION:-1.32.0}"
+export HELM_VERSION="${HELM_VERSION:-3.17.0}"
+export K8S_TOOLS_KIT_VERSION="${K8S_TOOLS_KIT_VERSION:-1.0.0}"
+export CLAUDE_K8S_KIT_VERSION="${CLAUDE_K8S_KIT_VERSION:-1.0.0}"
 ```
 
 ## Step 2. Import Docker's images into your registry
@@ -70,43 +92,126 @@ This step copies three images from Docker Hub into your registry: `docker/sbx-ki
 **Skip this step if your registry already proxies Docker Hub**, for example an Artifactory remote
 repository. Make the same three images available at those paths and go to Step 3.
 
-Otherwise, run it once, from a machine that is allowed to reach Docker Hub:
+Otherwise, do this once, from a machine that is allowed to reach Docker Hub.
 
-```console
-$ scripts/import.sh
+**Option A: run the script.** Besides the copy, it checks that the required variables are set and
+well formed, and that `regctl` is installed:
+
+```bash
+scripts/import.sh
+```
+
+**Option B: run the commands.** The first signs `regctl` in to your registry, and the next three
+copy the images:
+
+```bash
+printf '%s' "$REGISTRY_PASSWORD" | regctl registry login "$REGISTRY" -u "$REGISTRY_USERNAME" --pass-stdin
+regctl image copy "docker.io/docker/sbx-kit-claude:$CLAUDE_KIT_VERSION" "$KIT_NS/sbx-kit-claude:$CLAUDE_KIT_VERSION"
+regctl image copy docker.io/docker/sandbox-kit:3 "$KIT_NS/sandbox-kit:3"
+regctl image copy docker.io/library/debian:bookworm-slim "$KIT_NS/debian:bookworm-slim"
 ```
 
 ## Step 3. Build and publish the kits
 
-This step needs the three images from Step 2 to be in your registry already. It fills in your
-registry settings, builds the tools kit and the combined kit for `linux/amd64` and `linux/arm64`,
-and pushes both. The registry host appears inside the kit descriptors, so the script generates
-them into `.build/` (git-ignored) from the templates in `kits/`.
+This step needs the three images from Step 2 to be in your registry already. It has four parts:
 
-```console
-$ scripts/publish.sh
+1. Generate the kit descriptors from the templates in `kits/` into `.build/` (git-ignored). The
+   registry host has to appear inside the descriptors, and the build tool reads it literally, so it
+   can't be an environment variable.
+2. Sign Docker in to your registry.
+3. Create a build container. It has its own trust store, so a private CA has to be given to it.
+4. Build and push the two kits, for `linux/amd64` and `linux/arm64`. The tools kit goes first
+   because the combined kit pulls it.
+
+**Option A: run the script.** It also validates the registry values, fails if any placeholder is
+left unfilled in a descriptor, reuses an existing build container, and writes the trust
+configuration from `REGISTRY_CA_FILE` when you set it:
+
+```bash
+scripts/publish.sh
+```
+
+**Option B: run the commands.**
+
+First, generate the descriptors:
+
+```bash
+mkdir -p .build/kits/k8s-tools .build/kits/claude-k8s
+for f in k8s-tools/k8s-tools.yaml k8s-tools/k8s-tools.dockerfile claude-k8s/claude-k8s.yaml; do
+  sed -e "s|@KIT_NS@|$KIT_NS|g" \
+      -e "s|@KUBECTL_VERSION@|$KUBECTL_VERSION|g" \
+      -e "s|@HELM_VERSION@|$HELM_VERSION|g" \
+      -e "s|@CLAUDE_KIT_VERSION@|$CLAUDE_KIT_VERSION|g" \
+      -e "s|@K8S_TOOLS_KIT_VERSION@|$K8S_TOOLS_KIT_VERSION|g" \
+      -e "s|@CLAUDE_K8S_KIT_VERSION@|$CLAUDE_K8S_KIT_VERSION|g" \
+      "kits/$f.tmpl" > ".build/kits/$f"
+done
+```
+
+Then sign Docker in to your registry:
+
+```bash
+printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin
+```
+
+Then create the build container, once:
+
+```bash
+docker buildx create --name sbx-kit-builder --driver docker-container --bootstrap
+```
+
+If your registry's certificate comes from a private CA, create it with the CA instead.
+`REGISTRY_CA_FILE` must be the absolute path to the PEM file:
+
+```bash
+printf '[registry."%s"]\n  ca = ["%s"]\n' "$REGISTRY" "$REGISTRY_CA_FILE" > .build/buildkitd.toml
+docker buildx create --name sbx-kit-builder --driver docker-container --config .build/buildkitd.toml --bootstrap
+```
+
+Then build and push the tools kit:
+
+```bash
+docker buildx build --builder sbx-kit-builder \
+  -f .build/kits/k8s-tools/k8s-tools.yaml \
+  --platform linux/amd64,linux/arm64 --provenance=mode=min \
+  --build-arg "KIT_REGISTRY=$KIT_NS" \
+  -t "$KIT_NS/sbx-kit-k8s-tools:$K8S_TOOLS_KIT_VERSION" --push \
+  .build/kits/k8s-tools
+```
+
+Finally, build and push the combined kit:
+
+```bash
+docker buildx build --builder sbx-kit-builder \
+  -f .build/kits/claude-k8s/claude-k8s.yaml \
+  --platform linux/amd64,linux/arm64 --provenance=mode=min \
+  --build-arg "KIT_REGISTRY=$KIT_NS" \
+  -t "$KIT_NS/sbx-kit-claude-k8s:$CLAUDE_K8S_KIT_VERSION" --push \
+  .build/kits/claude-k8s
 ```
 
 ## Step 4. Configure `sbx` on a developer machine
 
-This step tells `sbx` to use your registry. It runs two commands:
+This step tells `sbx` to use your registry. It does two things:
 
-```console
-$ sbx settings set kit.allowedSources '["registry.example.com/sbx/"]'
-$ sbx secret set --registry registry.example.com --username "$REGISTRY_USERNAME" --password-stdin
-```
-
-`kit.allowedSources` replaces the whole allowlist. The default is `["docker.io/"]`, so after this
-command developers can install kits only from your registry. The second command stores the
-registry credential for `sbx` to use when pulling.
+- `kit.allowedSources` replaces the whole allowlist. The default is `["docker.io/"]`, so after this
+  setting, developers can install kits only from your registry.
+- The registry credential is stored for `sbx` to use when pulling.
 
 To configure many machines, the same allowlist can be set in a file instead of with the CLI. See
 [Managing settings and approvals centrally](#managing-settings-and-approvals-centrally).
 
-The script runs both commands with the values from your configuration:
+**Option A: run the script.** It also checks that the variables are set and that `sbx` is installed:
 
-```console
-$ scripts/client-setup.sh
+```bash
+scripts/client-setup.sh
+```
+
+**Option B: run the commands:**
+
+```bash
+sbx settings set kit.allowedSources "[\"$KIT_NS/\"]"
+printf '%s' "$REGISTRY_PASSWORD" | sbx secret set --registry "$REGISTRY" --username "$REGISTRY_USERNAME" --password-stdin
 ```
 
 ## Step 5. Run it
@@ -121,15 +226,15 @@ sandbox's network policy must allow the cluster's API server, for example
 
 Run the kit:
 
-```console
-$ sbx run --name demo registry.example.com/sbx/sbx-kit-claude-k8s:1.0.0 .
+```bash
+sbx run --name demo registry.example.com/sbx/sbx-kit-claude-k8s:1.0.0 .
 ```
 
 Inside the sandbox, confirm the tools are present:
 
-```console
-$ kubectl version --client
-$ helm version
+```bash
+kubectl version --client
+helm version
 ```
 
 ## Managing settings and approvals centrally
