@@ -1,25 +1,12 @@
 #!/usr/bin/env bash
-# Configures sbx on a developer machine to use your registry for kits.
-#
-#   scripts/client-setup.sh                 run the sbx commands on this machine
-#   scripts/client-setup.sh --payload DIR   write settings.json into DIR instead, for
-#                                           distribution with MDM; nothing is changed here
-#
-# The registry pull credential is a per-user secret and is only stored by the first mode.
+# Configures sbx on this machine to use your registry for kits: allows the registry as a
+# kit source and stores the registry pull credential.
 set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 resolve_registry
 sources="[\"$KIT_NS/\"]"
-
-if [[ "${1:-}" == "--payload" ]]; then
-  [[ -n "${2:-}" ]] || die "usage: client-setup.sh --payload DIR"
-  mkdir -p "$2"
-  printf '{\n  "kit.allowedSources": %s\n}\n' "$sources" > "$2/settings.json"
-  echo "wrote $2/settings.json"
-  exit 0
-fi
 
 require_env REGISTRY_USERNAME REGISTRY_PASSWORD
 require_tool sbx "Install Docker Sandboxes (sbx 0.45 or later)."

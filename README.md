@@ -99,6 +99,9 @@ $ sbx secret set --registry registry.example.com --username "$REGISTRY_USERNAME"
 command developers can install kits only from your registry. The second command stores the
 registry credential for `sbx` to use when pulling.
 
+To configure many machines, the same allowlist can be set in a file instead of with the CLI. See
+[Managing settings and approvals centrally](#managing-settings-and-approvals-centrally).
+
 ## Step 5. Run it
 
 ```console
@@ -107,7 +110,7 @@ $ sbx run --name demo registry.example.com/sbx/sbx-kit-claude-k8s:1.0.0 .
 
 On the first run, `sbx` shows a **credential approval** prompt, because the kit declares an
 Anthropic credential. Choose "Approve all". To avoid asking every developer, see
-[Rolling out with MDM](#rolling-out-with-mdm).
+[Managing settings and approvals centrally](#managing-settings-and-approvals-centrally).
 
 Inside the sandbox, confirm the tools are present:
 
@@ -120,37 +123,67 @@ For `kubectl` to reach a cluster, the sandbox's network policy must allow the cl
 server, for example `sbx policy allow network <api-server-host>:6443`, and the user must provide a
 kubeconfig.
 
-## Rolling out with MDM
+## Managing settings and approvals centrally
 
-Two files configure everything a developer would otherwise do by hand. Deploy both with your
-MDM tool. Neither is locked, so users can still edit them.
+Steps 4 and 5 configure one machine by hand. For many machines, two files hold the same
+information, and your MDM or configuration-management tool can deploy them. This repository
+doesn't ship either file: you create the content once and distribute it your way. Neither file
+is locked, so users can still edit them.
 
-**1. Allowed kit sources.** Generate the settings file:
+### Allowed kit sources: `settings.json`
 
-```console
-$ scripts/client-setup.sh --payload ./payload
+`sbx settings set` stores its overrides in a JSON file that maps setting names to values. To set
+the allowed kit sources by file, add the key:
+
+```json
+{
+  "kit.allowedSources": ["registry.example.com/sbx/"]
+}
 ```
 
-This writes `payload/settings.json`. Merge its `kit.allowedSources` entry into the user's `sbx`
-`settings.json`. On macOS that file is:
+- **Merge, don't overwrite.** The file also holds the user's other settings.
+- **Location on macOS:** `~/Library/Application Support/com.docker.sandboxes/sandboxes/settings.json`.
+  Docker doesn't document this location, so confirm it for your `sbx` version and operating system.
+- **The list replaces the default.** The default is `["docker.io/"]`. Include every prefix you want
+  to allow, with a trailing slash.
+- **Check what `sbx` sees:** `sbx settings get kit.allowedSources`. If a change doesn't show up, run
+  `sbx daemon restart`.
 
-```text
-~/Library/Application Support/com.docker.sandboxes/sandboxes/settings.json
+### Credential approvals: `credentials.yaml`
+
+A kit that uses a credential needs the user's approval before `sbx` will send it anywhere. That
+approval is recorded in `~/.config/sbx/credentials.yaml` (`%APPDATA%\sbx\credentials.yaml` on
+Windows), and it is what the first-run prompt writes when a user chooses "Approve all". The file
+holds no secrets. It only lists which credential mechanisms a service may use, and for which domains.
+
+An example for the Claude kit used here:
+
+```yaml
+bindings:
+  anthropic:
+    apiKey:
+      domains:
+        - api.anthropic.com
+        - claude.ai
+        - console.anthropic.com
+        - mcp-proxy.anthropic.com
+    oauth:
+      domains:
+        - platform.claude.com
 ```
 
-You can also set it with `sbx settings set` as in Step 4. The file location is not publicly
-documented by Docker, so confirm it for your `sbx` version and operating system.
-
-**2. Credential approvals.** The first-run prompt records the user's approval in
-`~/.config/sbx/credentials.yaml` (`%APPDATA%\sbx\credentials.yaml` on Windows). To pre-approve,
-run the kit once on a reference machine, review that file, and deploy the entries that belong
-to this kit. See Docker's
+Don't copy this verbatim. The domains have to match what the kit declares, and they can change
+between kit versions. The reliable way to produce the file is to run the kit once on a reference
+machine, approve it, and copy the entries `sbx` wrote for this kit. If a kit asks for domains the
+file doesn't cover, `sbx` asks again. See Docker's
 [credentials documentation](https://docs.docker.com/ai/sandboxes/configuration/credentials/).
-If a newer kit version declares additional domains, `sbx` asks again, so update the file when you
-publish a new kit version.
 
-The registry pull credential from Step 4 is stored in `sbx`'s credential store, not a file, so each
-user still needs to provide it, for example with `sbx secret set --registry`.
+### What stays per user
+
+- **The registry pull credential** from Step 4 lives in `sbx`'s credential store, not in a file, so
+  each user provides it, for example with `sbx secret set --registry`.
+- **The Anthropic credential itself.** Approval allows the kit to use a credential; it doesn't supply
+  one. Each user still stores a key or signs in.
 
 ## Network requirements
 
@@ -177,6 +210,6 @@ Confirm which of those your environment can allow.
 | `docker buildx build` fails with `x509: certificate signed by unknown authority` | The build runs in its own container with its own trust store. Set `REGISTRY_CA_FILE` in `.env`, run `docker buildx rm sbx-kit-builder`, and publish again. |
 | `sbx run` fails with `401 Unauthorized: pull failed for image` | `sbx` has no registry credential. Run `scripts/client-setup.sh`, or `sbx secret set --registry <host>`. Kit lookup can succeed from your Docker login even when the image pull has no credential. |
 | `sbx run` refuses the kit reference | The registry isn't in `kit.allowedSources`. Run `sbx settings get kit.allowedSources`. The entry needs a trailing slash and must cover the full path. |
-| The approval prompt appears for every developer | Expected on first run. Pre-approve with the MDM step above. |
+| The approval prompt appears for every developer | Expected on first run. Pre-approve by deploying `credentials.yaml`, as described under [Managing settings and approvals centrally](#managing-settings-and-approvals-centrally). |
 | `sbx run` is rejected because the kit "combines 2 context files" | A kit set can carry only one block of agent guidance. Don't add `agent-context` capabilities to the tools kit. |
 | Build fails downloading `kubectl` or Helm | The build container needs `dl.k8s.io` and `get.helm.sh`. Allow them, or mirror the binaries and change the URLs in `kits/k8s-tools/k8s-tools.dockerfile.tmpl`. |
