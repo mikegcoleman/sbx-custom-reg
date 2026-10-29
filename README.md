@@ -40,11 +40,9 @@ proxying. Building and running use your registry only.
 
 ## Step 1. Configure
 
-Copy the example file and fill it in:
-
-```console
-$ cp .env.example .env
-```
+Every script reads its settings from these variables. Set them in a `.env` file, or export them
+in your shell. If a variable is set in both places, the exported one wins. `.env` is git-ignored,
+so credentials stay out of the repository.
 
 | Variable | Required | Meaning |
 |---|---|---|
@@ -57,38 +55,41 @@ $ cp .env.example .env
 | `KUBECTL_VERSION`, `HELM_VERSION` | no | Tool versions. Match `KUBECTL_VERSION` to your cluster; kubectl supports one minor version of skew. |
 | `K8S_TOOLS_KIT_VERSION`, `CLAUDE_K8S_KIT_VERSION` | no | Tags for the kits built here. Default `1.0.0`. |
 
-You can skip the file and export the same variables in your shell instead. If a variable is set
-in both places, the exported one wins. `.env` is git-ignored, so credentials stay out of the repository.
+To use a `.env` file, copy the example and fill it in:
+
+```console
+$ cp .env.example .env
+```
 
 ## Step 2. Import Docker's images into your registry
 
-Run this once, from a machine that is allowed to reach Docker Hub:
+This step copies three images from Docker Hub into your registry: `docker/sbx-kit-claude`
+(Docker's Claude Code kit), `docker/sandbox-kit` (the kit build frontend) and `library/debian`
+(the base image for the tools kit). They land under `$REGISTRY/$REGISTRY_NAMESPACE/`.
+
+**Skip this step if your registry already proxies Docker Hub**, for example an Artifactory remote
+repository. Make the same three images available at those paths and go to Step 3.
+
+Otherwise, run it once, from a machine that is allowed to reach Docker Hub:
 
 ```console
 $ scripts/import.sh
 ```
 
-It copies `docker/sbx-kit-claude`, `docker/sandbox-kit` and `library/debian` into
-`$REGISTRY/$REGISTRY_NAMESPACE/`. If your registry already proxies Docker Hub, make the same
-three images available at those paths instead and skip this step.
-
 ## Step 3. Build and publish the kits
+
+This step needs the three images from Step 2 to be in your registry already. It fills in your
+registry settings, builds the tools kit and the combined kit for `linux/amd64` and `linux/arm64`,
+and pushes both. The registry host appears inside the kit descriptors, so the script generates
+them into `.build/` (git-ignored) from the templates in `kits/`.
 
 ```console
 $ scripts/publish.sh
 ```
 
-The script fills in your registry settings, builds the tools kit and the combined kit for
-`linux/amd64` and `linux/arm64`, and pushes both. The registry host appears inside the kit
-descriptors, so the scripts generate them into `.build/` (git-ignored) from the templates in `kits/`.
-
 ## Step 4. Configure `sbx` on a developer machine
 
-```console
-$ scripts/client-setup.sh
-```
-
-This runs two commands:
+This step tells `sbx` to use your registry. It runs two commands:
 
 ```console
 $ sbx settings set kit.allowedSources '["registry.example.com/sbx/"]'
@@ -102,15 +103,27 @@ registry credential for `sbx` to use when pulling.
 To configure many machines, the same allowlist can be set in a file instead of with the CLI. See
 [Managing settings and approvals centrally](#managing-settings-and-approvals-centrally).
 
+The script runs both commands with the values from your configuration:
+
+```console
+$ scripts/client-setup.sh
+```
+
 ## Step 5. Run it
+
+The first time you run a kit that declares a credential, `sbx` asks you to approve it. This kit
+declares an Anthropic credential, so choose "Approve all". To avoid asking every developer, see
+[Managing settings and approvals centrally](#managing-settings-and-approvals-centrally).
+
+If you want `kubectl` inside the sandbox to reach a cluster, do this before you run the kit: the
+sandbox's network policy must allow the cluster's API server, for example
+`sbx policy allow network <api-server-host>:6443`, and the user must provide a kubeconfig.
+
+Run the kit:
 
 ```console
 $ sbx run --name demo registry.example.com/sbx/sbx-kit-claude-k8s:1.0.0 .
 ```
-
-On the first run, `sbx` shows a **credential approval** prompt, because the kit declares an
-Anthropic credential. Choose "Approve all". To avoid asking every developer, see
-[Managing settings and approvals centrally](#managing-settings-and-approvals-centrally).
 
 Inside the sandbox, confirm the tools are present:
 
@@ -118,10 +131,6 @@ Inside the sandbox, confirm the tools are present:
 $ kubectl version --client
 $ helm version
 ```
-
-For `kubectl` to reach a cluster, the sandbox's network policy must allow the cluster's API
-server, for example `sbx policy allow network <api-server-host>:6443`, and the user must provide a
-kubeconfig.
 
 ## Managing settings and approvals centrally
 
@@ -133,7 +142,13 @@ is locked, so users can still edit them.
 ### Allowed kit sources: `settings.json`
 
 `sbx settings set` stores its overrides in a JSON file that maps setting names to values. To set
-the allowed kit sources by file, add the key:
+the allowed kit sources by file, add the key. Before you do:
+
+- **Merge, don't overwrite.** The file also holds the user's other settings.
+- **Location on macOS:** `~/Library/Application Support/com.docker.sandboxes/sandboxes/settings.json`.
+  Docker doesn't document this location, so confirm it for your `sbx` version and operating system.
+- **The list replaces the default.** The default is `["docker.io/"]`. Include every prefix you want
+  to allow, with a trailing slash.
 
 ```json
 {
@@ -141,13 +156,8 @@ the allowed kit sources by file, add the key:
 }
 ```
 
-- **Merge, don't overwrite.** The file also holds the user's other settings.
-- **Location on macOS:** `~/Library/Application Support/com.docker.sandboxes/sandboxes/settings.json`.
-  Docker doesn't document this location, so confirm it for your `sbx` version and operating system.
-- **The list replaces the default.** The default is `["docker.io/"]`. Include every prefix you want
-  to allow, with a trailing slash.
-- **Check what `sbx` sees:** `sbx settings get kit.allowedSources`. If a change doesn't show up, run
-  `sbx daemon restart`.
+To check what `sbx` sees, run `sbx settings get kit.allowedSources`. If a change doesn't show up,
+run `sbx daemon restart`.
 
 ### Credential approvals: `credentials.yaml`
 
@@ -156,7 +166,13 @@ approval is recorded in `~/.config/sbx/credentials.yaml` (`%APPDATA%\sbx\credent
 Windows), and it is what the first-run prompt writes when a user chooses "Approve all". The file
 holds no secrets. It only lists which credential mechanisms a service may use, and for which domains.
 
-An example for the Claude kit used here:
+Don't write this file from the example below. The domains have to match what the kit declares,
+and they can change between kit versions. The reliable way to produce the file is to run the kit
+once on a reference machine, approve it, and copy the entries `sbx` wrote for this kit. If a kit
+asks for domains the file doesn't cover, `sbx` asks again. See Docker's
+[credentials documentation](https://docs.docker.com/ai/sandboxes/configuration/credentials/).
+
+For illustration, this is the shape of the entries for the Claude kit used here:
 
 ```yaml
 bindings:
@@ -171,12 +187,6 @@ bindings:
       domains:
         - platform.claude.com
 ```
-
-Don't copy this verbatim. The domains have to match what the kit declares, and they can change
-between kit versions. The reliable way to produce the file is to run the kit once on a reference
-machine, approve it, and copy the entries `sbx` wrote for this kit. If a kit asks for domains the
-file doesn't cover, `sbx` asks again. See Docker's
-[credentials documentation](https://docs.docker.com/ai/sandboxes/configuration/credentials/).
 
 ### What stays per user
 
